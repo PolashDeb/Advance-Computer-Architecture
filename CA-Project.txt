@@ -1,0 +1,964 @@
+
+module CPU_MIPS(	
+input system_reset, 
+input system_clock,
+);
+					
+logic [31:0] R [0:31];
+logic [31:0] PC;
+logic [31:0] SP;
+logic [31:0] IR;
+logic [31:0] MA;
+logic [31:0] MD;
+logic [31:0] FLAGS;                     
+logic [31:0] XR;
+
+wire [5:0] OPCODE;
+wire [4:0] RD;
+wire [4:0] RS;
+wire [4:0] RT;
+wire [4:0] AUX2;
+wire [5:0] AUX1;
+wire [15:0] CONST16;
+
+logic [7:0] STATE;
+logic [2:0] F;              // FLAGS
+
+wire signed [63:0] DBUS;
+wire signed [31:0] SBUS;
+wire signed [31:0] TBUS;
+wire [31:0] T2BUS;
+Wire signed [31:0] OUTPUT;
+Wire [31:0] MEM_BUS;
+Wire [31:0] ROTATE;
+wire [31:0] A;
+Wire MEM_REQ;
+Wire MEM_READY;
+
+parameter BOOT_ADDRESS = 32'h0; 
+parameter STATE_FETCH= 8'h1;
+parameter STATE_FETCH2= 8'h2;
+parameter STATE_FETCH3= 8'h3;
+parameter STATE_DECODE1= 8'h4;
+parameter STATE_LOAD= 8'h5;
+parameter STATE_EXECUTE= 8'h6;
+parameter STATE_STORE= 8'h7;
+Parameter F1=3'b000;
+Parameter F2=3'b001;
+Parameter F3=3'b010;
+Parameter F4=3'b011;
+Parameter F5=3'b100;
+
+integer j=1;
+integer i,k;
+
+initial begin
+	STATE=STATE_FETCH;
+	PC=BOOT_ADDRESS;
+	DBUS=64'b0;
+	F=F1;
+end
+
+if(system_reset==1)
+begin
+$display("CPU has been reset");
+end
+
+else
+begin
+always@ (system_clock)
+begin
+         case(STATE)
+		    STATE_FETCH:                                  //Fetch
+		      begin
+			     if(posedge system_clock)
+                      begin
+                         SBUS=PC;
+						 TBUS=SBUS;
+				      end
+				  else
+				      begin
+					     MA=TBUS;
+					     STATE=STATE_FETCH2;
+				      end
+		      end
+			STATE_FETCH2:
+                begin
+				   if(posedge system_clock)
+                      begin
+					     MEM_REQ=1;
+                         TBUS=TBUS+4;
+				      end
+				  else
+				      begin
+					     if(MEM_READY==1 && MEM_REQ==1)
+						 begin
+						    MD=MEM_BUS;
+							MEM_REQ=0;
+					        PC=TBUS;
+					        STATE=STATE_FETCH3;
+						 end
+						 else
+						 begin
+						   T2BUS=TBUS;
+						   STATE=STATE_FETCH;
+						 end
+				      end
+				end	
+             STATE_FETCH3:
+                begin
+				     if(posedge system_clock)
+                      begin
+                         SBUS=MD;
+						 TBUS=SBUS;
+				      end
+				  else
+				      begin
+					     IR=TBUS;
+					     STATE=STATE_DECODE;
+				      end
+                end						  
+			  			  
+			  
+			STATE_DECODE:                         //Decode
+                begin
+				    if(posedge system_clock)
+					   begin
+					    OPCODE=IR[31:26];
+						RD=IR[25:21];
+						RS=IR[20:16];
+						RT=IR[15:11];
+						AUX2=IR[10:6];
+						AUX1=IR[5:0];
+						CONST16=IR[15:0];
+					   end
+					else
+                       begin
+						STATE= STATE_LOAD;
+                       end						
+				end		
+            STATE_LOAD:                      // Load
+                begin
+				   if(posedge system_clock)
+				      begin
+					  SBUS= R[RS];
+					  TBUS= R[RT];
+					  end
+				   else
+                   	 begin
+					 STATE=STATE_EXECUTE;
+                     end					 
+                end				
+			
+		   STATE_EXECUTE:
+			begin
+				if(posedge system_clock)	
+				    begin
+					  if(opcode==6'b000000)   //ADD
+						begin
+						    if(AUX1==6'b000000)
+							    begin
+							      DBUS=SBUS+TBUS;
+							    end
+						    else
+							    begin
+							      DBUS=SBUS+TBUS+FLAGS[0];
+							    end
+						
+						end
+					  else if(opcode==6'b000001) //SUB
+			            begin
+						    if(AUX1==6'b000000)
+							    begin
+							      DBUS=SBUS-TBUS;
+							    end
+						    else if(AUX1==6'b000001)
+							    begin
+							      DBUS=SBUS-TBUS-FLAGS[0];
+							    end
+							else 
+                                begin
+								   DBUS=;
+                                end								
+				        end
+					  else if(opcode==6'b000010) //MUL
+			            begin
+						    if(AUX1==6'b000000)
+							    begin
+							      DBUS=SBUS*TBUS;
+								  XR=DBUS[63:32];
+							    end
+						    else
+							    begin                   // UNSIGNED
+							      DBUS=SBUS*TBUS;
+								  XR=DBUS[63:32];
+							    end
+				
+						end
+                      else if(opcode==6'b000011) // DIV
+			            begin
+						    if(AUX1==6'b000000)
+							    begin
+							      DBUS=SBUS/TBUS;
+								  XR= SBUS%TBUS;
+							    end
+						    else                    // UNSIGNED
+							    begin
+							      DBUS=SBUS/TBUS;
+								  XR= SBUS%TBUS;
+							    end
+				
+						end						
+					 else if(opcode==6'b000100) // AND
+			            begin
+						    DBUS=SBUS&TBUS;
+					    end	
+					 else if(opcode==6'b000101) // OR
+			            begin
+						    DBUS=SBUS|TBUS;
+					    end
+                     else if(opcode==6'b000110) // XOR
+			            begin
+						    DBUS=SBUS^TBUS;
+					    end	
+                     else if(opcode==6'b000111) // NEG
+			            begin
+						    DBUS=-SBUS;
+					    end	
+                     else if(opcode==6'b001000) // NOT
+			            begin
+						    DBUS=~SBUS;
+					    end							
+					else if(opcode==6'b001001) // Left Shift,Rotate
+			            begin
+						   if(AUX1==6'b000000) //LSHL
+							    begin
+							      DBUS=SBUS<<TBUS;
+							    end
+						    else if(AUX1==6'b000001) //LSHA
+							    begin
+							      DBUS=SBUS<<<TBUS;
+							    end
+							else if(AUX1==6'b000010) //LSHL
+							    begin
+							      DBUS=SBUS<<AUX2;
+							    end
+						    else if(AUX1==6'b000011) //LSHA
+							    begin
+							      DBUS=SBUS<<<AUX2;
+							    end
+							else if(AUX1==6'b000100)  //ROL
+							    begin
+							      for(i=0;i<TBUS;i=i+1)
+								    begin
+									  k=SBUS[31];
+									  ROTATE=SBUS<<j;
+									  ROTATE[0]=k;
+									  SBUS=ROTATE;
+									  DBUS=SBUS;
+									end
+							    end
+						    else                  //ROL
+							    begin
+								   for(i=0;i<AUX2;i=i+1)
+								    begin
+									  k=SBUS[31];
+									  ROTATE=SBUS<<j;
+									  ROTATE[0]=k;
+									  SBUS=ROTATE;
+									  DBUS=SBUS;
+									end
+							      
+							    end
+							
+							
+					    end		
+						
+						else if(opcode==6'b001010) // Right Shift,Rotate
+			            begin
+						   if(AUX1==6'b000000) //RSHL
+							    begin
+							      DBUS=SBUS>>TBUS;
+							    end
+						    else if(AUX1==6'b000001) //RSHA
+							    begin
+							      DBUS=SBUS>>>TBUS;
+							    end
+							else if(AUX1==6'b000010) //RSHL
+							    begin
+							      DBUS=SBUS>>AUX2;
+							    end
+						    else if(AUX1==6'b000011) //RSHA
+							    begin
+							      DBUS=SBUS>>>AUX2;
+							    end
+							else if(AUX1==6'b000100)  //ROR
+							    begin
+							      for(i=0;i<TBUS;i=i+1)
+								    begin
+									  k=SBUS[0];
+									  ROTATE=SBUS>>j;
+									  ROTATE[31]=k;
+									  SBUS=ROTATE;
+									  DBUS=SBUS;
+									end
+							    end
+						    else                  //ROL
+							    begin
+								   for(i=0;i<AUX2;i=i+1)
+								    begin
+									  k=SBUS[0];
+									  ROTATE=SBUS>>j;
+									  ROTATE[31]=k;
+									  SBUS=ROTATE;
+									  DBUS=SBUS;
+									end
+							      
+							    end
+							
+							
+					    end	
+						
+						else if(opcode==6'b001011) // PUSH
+			            begin
+						  SP=SP-4;
+						  R[SP]=SBUS;
+						end
+						
+						else if(opcode==6'b001100) // PULL
+			            begin
+						  DBUS=R[SP];
+						  SP=SP+4;
+						end
+						
+						else if(opcode==6'b001101) // LOAD
+			            begin
+						   if(AUX1==6'b000000 && AUX2==6'b000000 ) //LDB
+							    begin
+							      DBUS[7:0]=SBUS;
+								  DBUS[63:8]=0;
+							    end
+						    else if(AUX1==6'b000001 && AUX2==6'b000000) //LDBX
+							    begin
+							     DBUS[7:0]=SBUS;
+								 DBUS[63:8]=1;
+								 for(i=0;i<56;i=i+1)
+								   begin
+								     DBUS[63:8]=DBUS[63:8]<<j;
+									 DBUS[8]=1;
+								   end
+							    end
+							else if(AUX1==6'b000000 && AUX2==6'b000001) //LDH
+							    begin
+							      DBUS[15:0]=SBUS;
+								  DBUS[63:16]=0;
+							    end
+						    else if(AUX1==6'b000001 && AUX2==6'b000001) //LDHX
+							    begin
+								  DBUS[15:0]=SBUS;
+								  DBUS[63:16]=1;
+								 for(i=0;i<48;i=i+1)
+								   begin
+								     DBUS[63:16]=DBUS[63:16]<<j;
+									 DBUS[16]=1;
+								   end
+							      
+							    end
+						
+						    else                  //LD,LDW
+							    begin
+								   DBUS=SBUS;
+							    end
+							
+							
+					    end	
+						
+						else if(opcode==6'b001110) // STORE
+			            begin
+						   if(AUX2==6'b000000 ) //STB
+							    begin
+							      R[RD]=SBUS[7:0];
+							    end
+						    else if(AUX2==6'b000001) //STH
+							    begin
+							     R[RD:RD+1]=SBUS[15:0];
+							    end
+							else                     //ST,STW
+							    begin
+							      R[RD:RD+1]=SBUS;
+							    end
+						end	
+						
+						else if(opcode==6'b001111) // COPY
+			            begin
+						DBUS=SBUS;
+						end
+						 
+						else if(opcode==6'b010000) // LF
+			            begin
+						   if(AUX1==6'b000000 ) //LFS
+							    begin
+							      DBUS=SP;
+							    end
+						    else if(AUX1==6'b000001) //LFF
+							    begin
+							      DBUS=FLAGS;
+							    end
+							 else if(AUX1==6'b000010) //LFX
+							    begin
+							     DBUS=XR;
+								 XR=0;
+							    end
+							else                     //LFP
+							    begin
+							      DBUS=PC;
+							    end
+						end	
+						 
+						else if(opcode==6'b010001 && AUX1==6'b000000) // STS
+			            begin
+						 SP=SBUS;
+						end
+						
+						else if(opcode==6'b010010) // LI
+			            begin
+						 DBUS[15:0]=CONST16;
+						 DBUS[63:16]=0;
+						end
+						
+						else if(opcode==6'b010011) // LIX
+			            begin
+						 DBUS[15:0]=CONST16;
+						 DBUS[63:16]=1;
+								 for(i=0;i<48;i=i+1)
+								   begin
+								     DBUS[63:16]=DBUS[63:16]<<j;
+									 DBUS[16]=1;
+								   end
+						 
+						end
+						
+						else if(opcode==6'b010100) // LUI
+			            begin
+						 DBUS[63:16]=CONST16;
+						end
+						
+						else if(opcode==6'b010101) // JUMP,BRANCH
+			            begin
+						   if(AUX1==6'b000000 && AUX2==6'b000000)  //JNV,NOP           //JUMP BEGIN
+						     begin
+							   PC=T2BUS;
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000001)  //JAL,JMP
+						     begin
+							   PC=SBUS;
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000010)  // JNE, JZC
+						     begin
+							    if(FLAGS[1]==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000011)   //JEQ, JZS
+						     begin
+							    if(FLAGS[1]==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000100)   //JGE
+						     begin
+							    if((FLAGS[2]^FLAGS[3]) ==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000101)    //JLT
+						     begin
+							     if((FLAGS[2]^FLAGS[3]) ==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000110)    //JGT
+						     begin
+							    if((FLAGS[1]|(FLAGS[2]^FLAGS[3])) ==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b000111)     //JLE
+						     begin
+							    if((FLAGS[1]|(FLAGS[2]^FLAGS[3])) ==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b001000)    //JHS, JGEU, JCC
+						     begin
+							    if(FLAGS[0]==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b001001)     //JLO, JLTU, JCS
+						     begin
+							    if(FLAGS[0]==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b001010)   // JHI, JGTU
+						     begin
+							    if((FLAGS[0]|FLAGS[1])==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b001011)   //JLS, JLEU
+						     begin
+							     if((FLAGS[0]|FLAGS[1])==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b001100)    //JPOS, JNC
+						     begin
+							    if(FLAGS[2]==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000000 && AUX2==6'b001101)     //JNEG, JNS
+						     begin
+							    if(FLAGS[2]==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						  else if(AUX1==6'b000000 && AUX2==6'b001110)        //JVC
+						     begin
+							    if(FLAGS[3]==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						  else if(AUX1==6'b000000 && AUX2==6'b001111)       //JVS
+						     begin
+							    if(FLAGS[3]==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						  else if(AUX1==6'b000000 && AUX2==6'b010000)      //JXC
+						     begin
+							    if(FLAGS[4]==0)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 end
+						  else if(AUX1==6'b000000 && AUX2==6'b010001)    //JXS             //JUMP END
+						     begin
+							    if(FLAGS[4]==1)
+								  begin
+								    PC=SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end  
+							 
+							 
+							 
+						   else if(AUX1==6'b000001 && AUX2==6'b000000)  //BNV           //BRANCH BEGIN
+						     begin
+							   PC=T2BUS;
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000001)  //BAL, BRA
+						     begin
+							   PC=T2BUS+SBUS;
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000010)  // BNE, BZC
+						     begin
+							    if(FLAGS[1]==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000011)   //BEQ, BZS
+						     begin
+							    if(FLAGS[1]==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000100)   //BGE
+						     begin
+							    if((FLAGS[2]^FLAGS[3]) ==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000101)    //BLT
+						     begin
+							     if((FLAGS[2]^FLAGS[3]) ==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000110)    //BGT
+						     begin
+							    if((FLAGS[1]|(FLAGS[2]^FLAGS[3])) ==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b000111)     //BLE
+						     begin
+							    if((FLAGS[1]|(FLAGS[2]^FLAGS[3])) ==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b001000)    //BHS, BGEU, BCC
+						     begin
+							    if(FLAGS[0]==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b001001)     //BLO, BLTU, BCS
+						     begin
+							    if(FLAGS[0]==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b001010)   // BHI, BGTU
+						     begin
+							    if((FLAGS[0]|FLAGS[1])==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b001011)   //BLS, BLEU
+						     begin
+							     if((FLAGS[0]|FLAGS[1])==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b001100)    //BPOS, BNC
+						     begin
+							    if(FLAGS[2]==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						   else if(AUX1==6'b000001 && AUX2==6'b001101)     //BNEG, BNS
+						     begin
+							    if(FLAGS[2]==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						  else if(AUX1==6'b000001 && AUX2==6'b001110)        //BVC
+						     begin
+							    if(FLAGS[3]==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						  else if(AUX1==6'b000001 && AUX2==6'b001111)       //BVS
+						     begin
+							    if(FLAGS[3]==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end
+						  else if(AUX1==6'b000001 && AUX2==6'b010000)      //BXC
+						     begin
+							    if(FLAGS[4]==0)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 end
+						  else if(AUX1==6'b000001 && AUX2==6'b010001)    //BXS             //BRANCH END
+						     begin
+							    if(FLAGS[4]==1)
+								  begin
+								    PC=T2BUS+SBUS;
+								  end
+							    else
+								  begin
+								    PC=T2BUS;
+								  end
+							 
+							 end   
+						   
+						   
+						end
+						
+						else if(opcode==6'b010110) // JSR,BSR
+			            begin
+						  if(AUX1==6'b000000)   //JSR
+						    begin
+								  R[SP]=PC;
+								  PC=SBUS;
+							end
+						   else              //BSR
+						    begin
+								  R[SP]=PC;
+								  PC=T2BUS+SBUS;
+							end
+						end
+						else if(opcode==6'b010111) // RTS
+			            begin
+								  A=R[SP];
+								  PC=A;
+								end
+						end
+								
+			        end
+			        else
+					  begin
+					    OUTPUT=DBUS[31:0];
+					    STATE=STATE_STORE;
+					  end
+			
+			STATE_STORE: 
+			   begin
+			       if(posedge system_clock)
+				     begin
+						Case(F)
+						  F1:                // Carry Flag
+						    begin
+							  if(DBUS[32]==1)
+							     begin
+							        FLAGS[0]=1;
+									F=F2;
+							     end
+						       else
+							     begin
+							        FLAGS[0]=0;
+									F=F2;
+							     end
+							end
+						  F2:               // Zero Flag
+						    begin
+							  if(OUTPUT==32'b0)
+							     begin
+							        FLAGS[1]=1;
+									F=F3;
+							     end
+						       else
+							     begin
+							        FLAGS[1]=0;
+									F=F3;
+							     end
+							end	
+						  F3:               // Negative Flag
+						    begin
+							  if(OUTPUT[31]==1)
+							     begin
+							        FLAGS[2]=1;
+									F=F4;
+							     end
+						       else
+							     begin
+							        FLAGS[2]=0;
+									F=F4;
+							     end
+							end	
+						  F4:               // Overflow Flag
+						    begin
+							  if(DBUS[31]==1 || DBUS[32]==1)
+							     begin
+							        FLAGS[3]=1;
+									F=F5;
+							     end
+						       else
+							     begin
+							        FLAGS[3]=0;
+									F=F5;
+							     end
+							end
+						  F5:               // XR register non-zero Flag
+						    begin
+							  if(XR==32'b0)
+							     begin
+							        FLAGS[4]=0;
+							     end
+						       else
+							     begin
+							        FLAGS[4]=1;
+							     end
+							end
+						
+						endcase//F
+					 
+					 end
+			        else
+					  begin
+					    R[RD]=OUTPUT;
+						STATE=STATE_FETCH; 
+					  end
+               end			
+			   
+          endcase //Case
+
+
+
+end ///always
+
+end  ///else
+
+
+endmodule: CPU_MIPS
